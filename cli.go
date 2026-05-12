@@ -20,7 +20,8 @@ type CLIOpts struct {
 	unload      bool
 	loadInput   bool
 	loadOutput  bool
-	threshold   int
+	intensity   int
+	vad         bool
 	list        bool
 	checkUpdate bool
 }
@@ -33,7 +34,8 @@ func parseCLIOpts() CLIOpts {
 	flag.BoolVar(&opt.loadInput, "i", false, "Load supressor for input. If no source device ID is specified the default pulse audio source is used.")
 	flag.BoolVar(&opt.loadOutput, "o", false, "Load supressor for output. If no source device ID is specified the default pulse audio source is used.")
 	flag.BoolVar(&opt.unload, "u", false, "Unload supressor")
-	flag.IntVar(&opt.threshold, "t", -1, "Voice activation threshold")
+	flag.IntVar(&opt.intensity, "t", -1, "RTX filtering intensity")
+	flag.BoolVar(&opt.vad, "v", false, "VAD enabled")
 	flag.BoolVar(&opt.list, "l", false, "List available PulseAudio devices")
 	flag.BoolVar(&opt.checkUpdate, "c", false, "Check if update is available (but do not update)")
 	flag.Parse()
@@ -102,12 +104,12 @@ func doCLI(opt CLIOpts, config *config, librnnoise string) {
 		cleanupExit(librnnoise, 0)
 	}
 
-	if opt.threshold > 0 {
-		if opt.threshold > 95 {
-			fmt.Fprintf(os.Stderr, "Threshold of '%d' too high, setting to maximum of 95.\n", opt.threshold)
-			ctx.config.Threshold = 95
+	if opt.intensity > 0 {
+		if opt.intensity > 100 {
+			fmt.Fprintf(os.Stderr, "Intensity of '%d' too high, setting to maximum of 100.\n", opt.intensity)
+			ctx.config.Intensity = 100
 		} else {
-			ctx.config.Threshold = opt.threshold
+			ctx.config.Intensity = opt.intensity
 		}
 	}
 

@@ -12,26 +12,35 @@
 #include "utils.h"
 
 #include "../c-ringbuf/ringbuf.h"
-#include "../rnnoise/include/rnnoise.h"
+#include "maxine_loader.h"
+#include "maxine_effect.h"
 
-#define SF_INPUT 0
-#define SF_OUTPUT 1
-#define SF_VAD 2
+enum SFInputs
+{
+  SF_INPUT,
+  SF_OUTPUT,
+  SF_VAD,
+  SF_INTENSITY,
+
+  SF_Count,
+};
 
 #define FRAMESIZE_NSAMPLES 480
 #define FRAMESIZE_BYTES (480 * sizeof(float))
 
-#define VAD_GRACE_PERIOD 20
-
 typedef struct {
+  int sdk_ok;
+  struct maxine_sdk sdk;
+  struct maxine_effect effect;
 
-  DenoiseState *st;
+  bool vad;
+  float intensity;
+
   ringbuf_t in_buf;
   ringbuf_t out_buf;
-  int32_t remaining_grace_period;
-  int init;
 
   LADSPA_Data *m_pfVAD;
+  LADSPA_Data *m_pfIntensity;
   LADSPA_Data *m_pfInput;
   LADSPA_Data *m_pfOutput;
 
@@ -40,24 +49,56 @@ typedef struct {
 static LADSPA_Handle
 instantiateSimpleFilter(const LADSPA_Descriptor *Descriptor,
                         unsigned long SampleRate) {
-
   rnnoiseFilter *psFilter;
 
-  psFilter = (rnnoiseFilter *)malloc(sizeof(rnnoiseFilter));
-
-  if (psFilter) {
-    psFilter->in_buf = ringbuf_new(FRAMESIZE_BYTES * 100);
-    psFilter->out_buf = ringbuf_new(FRAMESIZE_BYTES * 100);
-    psFilter->init = 0;
-    psFilter->remaining_grace_period = VAD_GRACE_PERIOD;
-    psFilter->st = rnnoise_create(NULL);
-  }
+  psFilter = (rnnoiseFilter *)calloc(1, sizeof(rnnoiseFilter));
+  psFilter->in_buf = ringbuf_new(FRAMESIZE_BYTES * 100);
+  psFilter->out_buf = ringbuf_new(FRAMESIZE_BYTES * 100);
+  psFilter->sdk_ok = maxine_sdk_load(&psFilter->sdk, NULL);
 
   return psFilter;
 }
 
+static bool to_boolean(const LADSPA_Data* data)
+{
+  if (!data)
+    return false;
+
+  return *data > 0.f;
+}
+
+static float to_percentage(const LADSPA_Data* data)
+{
+  if (!data)
+    return 1.f;
+
+  return *data / 100.f;
+}
+
 static void activateSimpleFilter(LADSPA_Handle Instance) {
-  
+  rnnoiseFilter *psFilter;
+
+  psFilter = (rnnoiseFilter *)Instance;
+
+  psFilter->vad       = to_boolean   (psFilter->m_pfVAD); 
+  psFilter->intensity = to_percentage(psFilter->m_pfIntensity);
+
+  struct maxine_effect_config config = {
+    .effect_id = NVAFX_EFFECT_DEREVERB_DENOISER,
+    .model_folder = "/opt/maxine-afx/features/dereverb_denoiser/models/sm_89",
+    .sample_rate = 48000,
+    .intensity = psFilter->intensity,
+    .enable_vad = psFilter->vad,
+  };
+  psFilter->effect = maxine_effect_create(&psFilter->sdk, &config);
+}
+
+static void deactivateSimpleFilter(LADSPA_Handle Instance) {
+  rnnoiseFilter *psFilter;
+
+  psFilter = (rnnoiseFilter *)Instance;
+
+  maxine_effect_destroy(&psFilter->effect);
 }
 
 static void connectPortToSimpleFilter(LADSPA_Handle Instance,
@@ -69,6 +110,9 @@ static void connectPortToSimpleFilter(LADSPA_Handle Instance,
   psFilter = (rnnoiseFilter *)Instance;
 
   switch (Port) {
+  case SF_INTENSITY:
+    psFilter->m_pfIntensity = DataLocation;
+    break;
   case SF_VAD:
     psFilter->m_pfVAD = DataLocation;
     break;
@@ -90,16 +134,30 @@ static void runFilter(LADSPA_Handle Instance, unsigned long n_samples) {
   ringbuf_t in_buf = psFilter->in_buf;
   ringbuf_t out_buf = psFilter->out_buf;
 
-  float *in, *out, vad_thresh;
+  bool vad = to_boolean(psFilter->m_pfVAD);
+  if (vad != psFilter->vad)
+  {
+    psFilter->vad = vad;
+    maxine_effect_set_vad(&psFilter->effect, psFilter->vad);
+  }
+
+  float intensity = to_percentage(psFilter->m_pfIntensity);
+  if (intensity != psFilter->intensity)
+  {
+    psFilter->intensity = intensity;
+    maxine_effect_set_intensity(&psFilter->effect, psFilter->intensity);
+  }
+
+  float *in, *out;
 
   in = psFilter->m_pfInput;
   out = psFilter->m_pfOutput;
 
-  vad_thresh = *psFilter->m_pfVAD / 100;
-
+#if 0
   for (int i = 0; i < n_samples; i++) {
     in[i] = in[i] * 32767;
   }
+#endif
 
   ringbuf_memcpy_into(in_buf, in, n_samples * sizeof(float));
 
@@ -109,19 +167,7 @@ static void runFilter(LADSPA_Handle Instance, unsigned long n_samples) {
 
   for (int i = 0; i < n_frames; i++) {
     float tmp[FRAMESIZE_NSAMPLES];
-    float vad_prob = rnnoise_process_frame(psFilter->st, tmp,
-                                           tmpin + (i * FRAMESIZE_NSAMPLES));
-    if (vad_prob > vad_thresh) {
-      psFilter->remaining_grace_period = VAD_GRACE_PERIOD;
-    }
-
-    if (psFilter->remaining_grace_period >= 0) {
-      psFilter->remaining_grace_period--;
-    } else {
-      for (int i = 0; i < FRAMESIZE_NSAMPLES; i++) {
-        tmp[i] = 0.f;
-      }
-    }
+    maxine_effect_process(&psFilter->effect, tmpin + (i * FRAMESIZE_NSAMPLES), tmp, FRAMESIZE_NSAMPLES);
     ringbuf_memcpy_into(out_buf, tmp, FRAMESIZE_BYTES);
   }
 
@@ -138,14 +184,16 @@ static void runFilter(LADSPA_Handle Instance, unsigned long n_samples) {
     ringbuf_memcpy_from(out, out_buf, n_samples * sizeof(float));
   }
 
+#if 0
   for (int i = 0; i < n_samples; i++) {
     out[i] = out[i] / 32767;
   }
+#endif
 }
 
 static void cleanupFilter(LADSPA_Handle Instance) {
   rnnoiseFilter *psFilter = (rnnoiseFilter *)Instance;
-  rnnoise_destroy(psFilter->st);
+  maxine_sdk_unload(&psFilter->sdk);
   ringbuf_free(&(psFilter->in_buf));
   ringbuf_free(&(psFilter->out_buf));
   free(Instance);
@@ -169,27 +217,29 @@ ON_LOAD_ROUTINE {
     g_psDescriptor->Name = strdup("nt-filter rnnoise ladspa module");
     g_psDescriptor->Maker = strdup("nt-org");
     g_psDescriptor->Copyright = strdup("GPL3+");
-    g_psDescriptor->PortCount = 3;
+    g_psDescriptor->PortCount = SF_Count;
     piPortDescriptors =
-        (LADSPA_PortDescriptor *)calloc(3, sizeof(LADSPA_PortDescriptor));
+        (LADSPA_PortDescriptor *)calloc(SF_Count, sizeof(LADSPA_PortDescriptor));
     g_psDescriptor->PortDescriptors =
         (const LADSPA_PortDescriptor *)piPortDescriptors;
+    piPortDescriptors[SF_INTENSITY] = LADSPA_PORT_INPUT | LADSPA_PORT_CONTROL;
     piPortDescriptors[SF_VAD] = LADSPA_PORT_INPUT | LADSPA_PORT_CONTROL;
     piPortDescriptors[SF_INPUT] = LADSPA_PORT_INPUT | LADSPA_PORT_AUDIO;
     piPortDescriptors[SF_OUTPUT] = LADSPA_PORT_OUTPUT | LADSPA_PORT_AUDIO;
-    pcPortNames = (char **)calloc(3, sizeof(char *));
+    pcPortNames = (char **)calloc(SF_Count, sizeof(char *));
     g_psDescriptor->PortNames = (const char **)pcPortNames;
-    pcPortNames[SF_VAD] = strdup("VAD %%");
+    pcPortNames[SF_INTENSITY] = strdup("Intensity %%");
+    pcPortNames[SF_VAD] = strdup("VAD");
     pcPortNames[SF_INPUT] = strdup("Input");
     pcPortNames[SF_OUTPUT] = strdup("Output");
     psPortRangeHints =
-        ((LADSPA_PortRangeHint *)calloc(3, sizeof(LADSPA_PortRangeHint)));
+        ((LADSPA_PortRangeHint *)calloc(SF_Count, sizeof(LADSPA_PortRangeHint)));
     g_psDescriptor->PortRangeHints =
         (const LADSPA_PortRangeHint *)psPortRangeHints;
-    psPortRangeHints[SF_VAD].HintDescriptor =
-        (LADSPA_HINT_BOUNDED_BELOW | LADSPA_HINT_BOUNDED_ABOVE);
-    psPortRangeHints[SF_VAD].LowerBound = 0;
-    psPortRangeHints[SF_VAD].UpperBound = 95;
+    psPortRangeHints[SF_INTENSITY].HintDescriptor = LADSPA_HINT_BOUNDED_BELOW | LADSPA_HINT_BOUNDED_ABOVE;
+    psPortRangeHints[SF_INTENSITY].LowerBound = 0;
+    psPortRangeHints[SF_INTENSITY].UpperBound = 100;
+    psPortRangeHints[SF_VAD].HintDescriptor = LADSPA_HINT_TOGGLED | LADSPA_HINT_DEFAULT_0;
     psPortRangeHints[SF_INPUT].HintDescriptor = 0;
     psPortRangeHints[SF_OUTPUT].HintDescriptor = 0;
     g_psDescriptor->instantiate = instantiateSimpleFilter;
@@ -198,7 +248,7 @@ ON_LOAD_ROUTINE {
     g_psDescriptor->run = runFilter;
     g_psDescriptor->run_adding = NULL;
     g_psDescriptor->set_run_adding_gain = NULL;
-    g_psDescriptor->deactivate = NULL;
+    g_psDescriptor->deactivate = deactivateSimpleFilter;
     g_psDescriptor->cleanup = cleanupFilter;
   }
 }

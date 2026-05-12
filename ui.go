@@ -134,22 +134,22 @@ func mainView(ctx *ntcontext, w *nucular.Window) {
 		w.Spacing(1)
 
 		w.Row(25).Ratio(0.5, 0.45, 0.05)
-		w.Label("Voice Activation Threshold", "LC")
+		w.Label("Intensity", "LC")
 		if w.Input().Mouse.HoveringRect(w.LastWidgetBounds) {
 			w.Tooltip("If you have a decent microphone, you can usually turn this all the way up.")
 		}
-		if w.SliderInt(0, &ctx.config.Threshold, 95, 1) {
+		if w.SliderInt(0, &ctx.config.Intensity, 100, 1) {
 			go writeConfig(ctx.config)
 			ctx.reloadRequired = true
 		}
-		w.Label(fmt.Sprintf("%d%%", ctx.config.Threshold), "RC")
+		w.Label(fmt.Sprintf("%d%%", ctx.config.Intensity), "RC")
 
 		if ctx.reloadRequired {
 			w.Row(20).Dynamic(1)
 			w.LabelColored("Reloading the filter(s) is required to apply these changes.", "LC", orange)
 		}
 
-		w.Row(15).Dynamic(2)
+		w.Row(15).Dynamic(3)
 		if w.CheckboxText("Filter Microphone", &ctx.config.FilterInput) {
 			ctx.sourceListColdWidthIndex++ //recompute the with because of new elements
 			go writeConfig(ctx.config)
@@ -160,6 +160,11 @@ func mainView(ctx *ntcontext, w *nucular.Window) {
 			ctx.sourceListColdWidthIndex++ //recompute the with because of new elements
 			go writeConfig(ctx.config)
 			go (func() { ctx.noiseSupressorState, _ = supressorState(ctx) })()
+		}
+
+		if w.CheckboxText("VAD", &ctx.config.VAD) {
+			go writeConfig(ctx.config)
+			ctx.reloadRequired = true
 		}
 
 		w.TreePop()

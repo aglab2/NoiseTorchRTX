@@ -195,12 +195,20 @@ func loadModule(ctx *ntcontext, module, args string) (uint32, error) {
 	return idx, err
 }
 
+func vadControl(ctx *ntcontext) int {
+	if ctx.config.VAD {
+		return 1
+	} else {
+		return 0
+	}
+}
+
 func loadPipeWireInput(ctx *ntcontext, inp *device) error {
 	log.Printf("Loading supressor for pipewire\n")
 	idx, err := loadModule(ctx, "module-ladspa-source",
 		fmt.Sprintf("source_name='Filtered Microphone for %s' master=%s "+
 			"rate=48000 channels=1 "+
-			"label=nt-filter plugin=%s control=%d", inp.Name, inp.ID, ctx.librnnoise, ctx.config.Threshold))
+			"label=nt-filter plugin=%s control=%d,%d", inp.Name, inp.ID, ctx.librnnoise, vadControl(ctx), ctx.config.Intensity))
 
 	if err != nil {
 		return err
@@ -214,7 +222,7 @@ func loadPipeWireOutput(ctx *ntcontext, out *device) error {
 	idx, err := loadModule(ctx, "module-ladspa-sink",
 		fmt.Sprintf("sink_name='Filtered Headphones' master=%s "+
 			"rate=48000 channels=1 "+
-			"label=nt-filter plugin=%s control=%d", out.ID, ctx.librnnoise, ctx.config.Threshold))
+			"label=nt-filter plugin=%s control=%d,%d", out.ID, ctx.librnnoise, vadControl(ctx), ctx.config.Intensity))
 
 	if err != nil {
 		return err
@@ -233,7 +241,7 @@ func loadPulseInput(ctx *ntcontext, inp *device) error {
 
 	idx, err = loadModule(ctx, "module-ladspa-sink",
 		fmt.Sprintf("sink_name=nui_mic_raw_in sink_master=nui_mic_denoised_out "+
-			"label=nt-filter plugin=%s control=%d", ctx.librnnoise, ctx.config.Threshold))
+			"label=nt-filter plugin=%s control=%d,%d", ctx.librnnoise, vadControl(ctx), ctx.config.Intensity))
 	if err != nil {
 		return err
 	}
@@ -276,8 +284,8 @@ func loadPulseOutput(ctx *ntcontext, out *device) error {
 	}
 
 	_, err = loadModule(ctx, "module-ladspa-sink", fmt.Sprintf(`sink_name=nui_out_ladspa sink_master=nui_out_out_sink `+
-		`label=nt-filter channels=1 plugin=%s control=%d rate=%d`,
-		ctx.librnnoise, ctx.config.Threshold, 48000))
+		`label=nt-filter channels=1 plugin=%s control=%d,%d rate=%d`,
+		ctx.librnnoise, vadControl(ctx), ctx.config.Intensity, 48000))
 	if err != nil {
 		return err
 	}

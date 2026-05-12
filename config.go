@@ -13,7 +13,8 @@ import (
 )
 
 type config struct {
-	Threshold             int
+	Intensity             int
+	VAD                   bool
 	DisplayMonitorSources bool
 	EnableUpdates         bool
 	FilterInput           bool
@@ -31,7 +32,8 @@ func initializeConfigIfNot() {
 	// Unless you set -tags release on the build the updater is *not* compiled in anymore. DO NOT MESS WITH THIS!
 	// This isn't and never was the proper location to disable the updater.
 	conf := config{
-		Threshold:             95,
+		Intensity:             100,
+		VAD:                   false,
 		DisplayMonitorSources: false,
 		EnableUpdates:         true,
 		FilterInput:           true,
