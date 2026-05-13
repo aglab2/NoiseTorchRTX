@@ -17,23 +17,88 @@
 [stars-shield]: https://img.shields.io/github/stars/noisetorch/NoiseTorch?maxAge=2592000
 [stars-url]: https://github.com/noisetorch/NoiseTorch/stargazers/
 
-NoiseTorch-ng is an easy to use open source application for Linux with PulseAudio or PipeWire. It creates a virtual microphone that suppresses noise in any application using [RNNoise](https://github.com/xiph/rnnoise). Use whichever conferencing or VOIP application you like and simply select the filtered Virtual Microphone as input to torch the sound of your mechanical keyboard, computer fans, trains and the likes.
+NoiseTorch-ng is an easy to use open source application for Linux with PulseAudio or PipeWire. RNNoise was replaced Nvidia Linux Audio Effects SDK. Use whichever conferencing or VOIP application you like and simply select the filtered Virtual Microphone as input to torch the sound of your mechanical keyboard, computer fans, trains and the likes.
 
 Don't forget to leave a star ⭐ if this sounds useful to you! 
 
-## Regarding the recent security incident
+## Linux AFX SDK installation.
 
-Due to a suspected security breach of the update server and code repository, there's
- been a concerted effort by the NoiseTorch community to ensure the source code and
- binaries are free from malicious code.
- 
- > No malicious code has been found.
- 
- You can read more about the audit that was done [here](https://github.com/noisetorch/NoiseTorch/discussions/275)
- and [here](https://github.com/noisetorch/NoiseTorch/discussions/264).
- Updates will now be retrieved from the project's releases page to avoid any risk
- of this reoccurring. We thank everyone for their trust and the love that they've
- shown towards the project in this unpleasant time. 
+Visit Nvidia page to get [SDK](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/maxine/resources/maxine_linux_audio_effects_sdk) and [models](https://catalog.ngc.nvidia.com/orgs/nvidia/teams/maxine/collections/maxine_linux_audio_effects_sdk_collection/artifacts), You will need a free account on Nvidia website.
+
+You will need to download the following files:
+1) `NVIDIA_AFX_SDK_Linux_<VERSION>.tar.gz`. I am using version 1.6.1 because it is the only one that works with my GPU.
+2) `afx_dereverb_denoiser_<VERSION>-48k-sm86.zip`. Tool requires 48 kHz and dereverb_denoiser model. To find the correct `sm` version use cmdline - pay attention to 8.6 matching sm86
+
+```
+$ nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
+NVIDIA GeForce RTX 3070, 8.6
+```
+
+Extract `NVIDIA_AFX_SDK_Linux_<VERSION>.tar.gz` to /opt/maxine-sdk. Expected layout
+
+```
+$ ls -la /opt/maxine-afx
+total 976
+drwxr-xr-x  7 admin admin   4096 May 13 20:46  .
+drwxr-xr-x 17 root  root    4096 May 13 20:44  ..
+drwxr-xr-x  9 admin admin   4096 Jun 12  2025  docs
+drwxr-xr-x  3 admin admin   4096 Jun 12  2025  external
+drwxr-xr-x  2 admin admin   4096 Jun 12  2025  models
+drwxr-xr-x  4 admin admin   4096 Jun 12  2025  nvafx
+-r--r--r--  1 admin admin 956770 Jun 12  2025 'NVIDIA AI Product Agreement.pdf'
+-rw-r--r--  1 admin admin   6459 Jun 12  2025  README.md
+drwxr-xr-x  7 admin admin   4096 Jun 12  2025  samples
+-rw-r--r--  1 admin admin    623 Jun 12  2025  version.h
+```
+
+Extract `afx_dereverb_denoiser_<VERSION>-48k-sm86.zip` to `/opt/maxine-afx/models/dereverb_denoiser/models/sm_89`. Note that this exact path is hardcoded.
+
+```
+ls -la '/opt/maxine-afx/features/dereverb_denoiser/models/sm_89'
+total 38712
+drwxr-xr-x 2 admin admin     4096 May 13 20:52 .
+drwxr-xr-x 3 admin admin     4096 May 13 20:47 ..
+-rw-rw-r-- 1 admin admin 39627584 May 13 12:41 dereverb_denoiser_48k.trtpkg
+```
+
+Create a new file `/etc/ld.so.conf.d/maxine-afx.conf` for `ld` to pick up the libraries
+
+```
+$ cat /etc/ld.so.conf.d/maxine-afx.conf
+/opt/maxine-afx/nvafx/lib
+/opt/maxine-afx/external/cuda/lib
+/usr/local/lib
+```
+
+Run the tool and check journalctl outputs
+```
+$ journalctl -f
+May 13 20:57:53 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(output_sample_rate) failed (may be OK): invalid parameter
+May 13 20:57:53 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(output_sample_rate) failed (may be OK): invalid parameter
+May 13 20:57:53 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(num_input_channels) failed (may be OK): invalid parameter
+May 13 20:57:53 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(num_output_channels) failed (may be OK): invalid parameter
+May 13 20:57:53 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(num_input_channels) failed (may be OK): invalid parameter
+May 13 20:57:53 admin-b550mds3h pulseaudio[31763]: maxine: loading model from /opt/maxine-afx/features/dereverb_denoiser/models/sm_89/dereverb_denoiser_48k.trtpkg ...
+May 13 20:57:53 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(num_output_channels) failed (may be OK): invalid parameter
+May 13 20:57:53 admin-b550mds3h pulseaudio[31763]: maxine: loading model from /opt/maxine-afx/features/dereverb_denoiser/models/sm_89/dereverb_denoiser_48k.trtpkg ...
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: 'dereverb_denoiser' loaded, frame_size=480 (10.0 ms)
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: audio node 'dereverb_denoiser' created and connected
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: 'dereverb_denoiser' loaded, frame_size=480 (10.0 ms)
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: audio node 'dereverb_denoiser' created and connected
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(output_sample_rate) failed (may be OK): invalid parameter
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(num_input_channels) failed (may be OK): invalid parameter
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(num_output_channels) failed (may be OK): invalid parameter
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(output_sample_rate) failed (may be OK): invalid parameter
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(num_input_channels) failed (may be OK): invalid parameter
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: loading model from /opt/maxine-afx/features/dereverb_denoiser/models/sm_89/dereverb_denoiser_48k.trtpkg ...
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: SetU32(num_output_channels) failed (may be OK): invalid parameter
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: loading model from /opt/maxine-afx/features/dereverb_denoiser/models/sm_89/dereverb_denoiser_48k.trtpkg ...
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: No remapping configured, proceeding nonetheless!
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: 'dereverb_denoiser' loaded, frame_size=480 (10.0 ms)
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: audio node 'dereverb_denoiser' created and connected
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: 'dereverb_denoiser' loaded, frame_size=480 (10.0 ms)
+May 13 20:57:54 admin-b550mds3h pulseaudio[31763]: maxine: audio node 'dereverb_denoiser' created and connected
+```
 
 ## Screenshot
 
