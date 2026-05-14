@@ -5,6 +5,8 @@
 */
 
 #include <math.h>
+#include <threads.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,10 +30,16 @@ enum SFInputs
 #define FRAMESIZE_NSAMPLES 480
 #define FRAMESIZE_BYTES (480 * sizeof(float))
 
+#define likely(x)   __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
 typedef struct {
   int sdk_ok;
   struct maxine_sdk sdk;
-  struct maxine_effect effect;
+  struct maxine_effect* effect;
+
+  thrd_t maxine_loading_thread;
+  _Atomic(struct maxine_effect*) future_effect;
 
   bool vad;
   float intensity;
@@ -75,13 +83,8 @@ static float to_percentage(const LADSPA_Data* data)
   return *data / 100.f;
 }
 
-static void activateSimpleFilter(LADSPA_Handle Instance) {
-  rnnoiseFilter *psFilter;
-
-  psFilter = (rnnoiseFilter *)Instance;
-
-  psFilter->vad       = to_boolean   (psFilter->m_pfVAD); 
-  psFilter->intensity = to_percentage(psFilter->m_pfIntensity);
+static int futureSimpleFilter(void* Instance) {
+  rnnoiseFilter *psFilter = (rnnoiseFilter *)Instance;
 
   struct maxine_effect_config config = {
     .effect_id = NVAFX_EFFECT_DEREVERB_DENOISER,
@@ -90,7 +93,24 @@ static void activateSimpleFilter(LADSPA_Handle Instance) {
     .intensity = psFilter->intensity,
     .enable_vad = psFilter->vad,
   };
-  psFilter->effect = maxine_effect_create(&psFilter->sdk, &config);
+
+  struct maxine_effect* new_effect = malloc(sizeof(struct maxine_effect));
+  *new_effect = maxine_effect_create(&psFilter->sdk, &config);
+  atomic_store(&psFilter->future_effect, new_effect);
+
+  return 0;
+}
+
+static void activateSimpleFilter(LADSPA_Handle Instance) {
+  rnnoiseFilter *psFilter;
+
+  psFilter = (rnnoiseFilter *)Instance;
+
+  psFilter->vad       = to_boolean   (psFilter->m_pfVAD); 
+  psFilter->intensity = to_percentage(psFilter->m_pfIntensity);
+
+  thrd_create(&psFilter->maxine_loading_thread, futureSimpleFilter, Instance);
+  psFilter->effect = NULL;
 }
 
 static void deactivateSimpleFilter(LADSPA_Handle Instance) {
@@ -98,7 +118,14 @@ static void deactivateSimpleFilter(LADSPA_Handle Instance) {
 
   psFilter = (rnnoiseFilter *)Instance;
 
-  maxine_effect_destroy(&psFilter->effect);
+  int _res;
+  thrd_join(psFilter->maxine_loading_thread, &_res);
+
+  struct maxine_effect* effect = psFilter->effect;
+  if (!effect) effect = atomic_load(&psFilter->future_effect);
+
+  maxine_effect_destroy(effect);
+  free(effect);
 }
 
 static void connectPortToSimpleFilter(LADSPA_Handle Instance,
@@ -134,30 +161,31 @@ static void runFilter(LADSPA_Handle Instance, unsigned long n_samples) {
   ringbuf_t in_buf = psFilter->in_buf;
   ringbuf_t out_buf = psFilter->out_buf;
 
-  bool vad = to_boolean(psFilter->m_pfVAD);
-  if (vad != psFilter->vad)
-  {
-    psFilter->vad = vad;
-    maxine_effect_set_vad(&psFilter->effect, psFilter->vad);
+  if (unlikely(!psFilter->effect)) {
+    psFilter->effect = atomic_load(&psFilter->future_effect);
   }
 
-  float intensity = to_percentage(psFilter->m_pfIntensity);
-  if (intensity != psFilter->intensity)
-  {
-    psFilter->intensity = intensity;
-    maxine_effect_set_intensity(&psFilter->effect, psFilter->intensity);
+  struct maxine_effect* effect = psFilter->effect;
+  if (likely(effect)) {
+    bool vad = to_boolean(psFilter->m_pfVAD);
+    if (unlikely(vad != psFilter->vad))
+    {
+      psFilter->vad = vad;
+      maxine_effect_set_vad(effect, psFilter->vad);
+    }
+
+    float intensity = to_percentage(psFilter->m_pfIntensity);
+    if (unlikely(intensity != psFilter->intensity))
+    {
+      psFilter->intensity = intensity;
+      maxine_effect_set_intensity(effect, psFilter->intensity);
+    }
   }
 
   float *in, *out;
 
   in = psFilter->m_pfInput;
   out = psFilter->m_pfOutput;
-
-#if 0
-  for (int i = 0; i < n_samples; i++) {
-    in[i] = in[i] * 32767;
-  }
-#endif
 
   ringbuf_memcpy_into(in_buf, in, n_samples * sizeof(float));
 
@@ -167,7 +195,11 @@ static void runFilter(LADSPA_Handle Instance, unsigned long n_samples) {
 
   for (int i = 0; i < n_frames; i++) {
     float tmp[FRAMESIZE_NSAMPLES];
-    maxine_effect_process(&psFilter->effect, tmpin + (i * FRAMESIZE_NSAMPLES), tmp, FRAMESIZE_NSAMPLES);
+    if (likely(effect)) {
+      maxine_effect_process(effect, tmpin + (i * FRAMESIZE_NSAMPLES), tmp, FRAMESIZE_NSAMPLES);
+    } else {
+      memcpy(tmp, tmpin + (i * FRAMESIZE_NSAMPLES), FRAMESIZE_NSAMPLES * sizeof(float));
+    }
     ringbuf_memcpy_into(out_buf, tmp, FRAMESIZE_BYTES);
   }
 
@@ -183,12 +215,6 @@ static void runFilter(LADSPA_Handle Instance, unsigned long n_samples) {
   } else {
     ringbuf_memcpy_from(out, out_buf, n_samples * sizeof(float));
   }
-
-#if 0
-  for (int i = 0; i < n_samples; i++) {
-    out[i] = out[i] / 32767;
-  }
-#endif
 }
 
 static void cleanupFilter(LADSPA_Handle Instance) {
