@@ -79,3 +79,18 @@ typedef enum {
     NVAFX_STATUS_CUDA_ERROR                  = 15,
     NVAFX_STATUS_INVALID_OPERATION           = 16,
 } NvAFX_Status;
+
+typedef enum NvAFX_LoggingSeverity_t {
+    NVAFX_LOG_LEVEL_ERROR,
+    NVAFX_LOG_LEVEL_WARNING,
+    NVAFX_LOG_LEVEL_INFO,
+} NvAFX_LoggingSeverity;
+
+typedef enum NvAFX_LoggingTarget_t {
+    NVAFX_LOG_TARGET_NONE = 0x0,
+    NVAFX_LOG_TARGET_STDERR = 0x1,
+    NVAFX_LOG_TARGET_FILE = 0x2,
+    NVAFX_LOG_TARGET_CALLBACK = 0x4,
+} NvAFX_LoggingTarget;
+
+typedef void(*nvafx_logging_cb_t)(NvAFX_LoggingSeverity level, const char* log, void* userdata);

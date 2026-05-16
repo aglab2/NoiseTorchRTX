@@ -24,6 +24,7 @@ void maxine_effect_process(struct maxine_effect* node, const float* src, float* 
 
 static int init_effect(struct maxine_effect *node, const struct maxine_effect_config *config)
 {
+    fprintf(stderr, "maxine: init_effect(%p)\n", node);
     NvAFX_Status st;
     char model[4096];
 

@@ -21,6 +21,20 @@
         sdk->name = (fn_NvAFX_##name)dlsym(sdk->lib_handle, "NvAFX_" #name);  \
     } while (0)
 
+static inline const char* LogSeverityToString(NvAFX_LoggingSeverity severity) {
+  switch (severity) {
+    case NVAFX_LOG_LEVEL_ERROR:    return "ERROR";
+    case NVAFX_LOG_LEVEL_WARNING:  return "WARNING";
+    case NVAFX_LOG_LEVEL_INFO:     return "INFO";
+    default: return "UNKNOWN";
+  }
+}
+
+static void maxine_log(NvAFX_LoggingSeverity level, const char* log, void* userdata)
+{
+    fprintf(stderr, "%s: %s\n", LogSeverityToString(level), log);
+}
+
 bool maxine_sdk_load(struct maxine_sdk *sdk, const char *sdk_path)
 {
     *sdk = (struct maxine_sdk){};
@@ -85,12 +99,15 @@ bool maxine_sdk_load(struct maxine_sdk *sdk, const char *sdk_path)
     LOAD_SYM_OPT(sdk, InitializeLogger);
     LOAD_SYM_OPT(sdk, UninitializeLogger);
 
+    sdk->InitializeLogger(NVAFX_LOG_LEVEL_INFO, NVAFX_LOG_TARGET_CALLBACK, "", maxine_log, NULL);
+
     return true;
 }
 
 void maxine_sdk_unload(struct maxine_sdk *sdk)
 {
     if (sdk->lib_handle) {
+        sdk->UninitializeLogger();
         dlclose(sdk->lib_handle);
         sdk->lib_handle = NULL;
     }

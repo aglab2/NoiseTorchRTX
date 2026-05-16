@@ -15,7 +15,7 @@ typedef NvAFX_Status (*fn_NvAFX_SetFloat)(NvAFX_Handle, NvAFX_ParameterSelector,
 typedef NvAFX_Status (*fn_NvAFX_GetU32)(NvAFX_Handle, NvAFX_ParameterSelector, unsigned int *);
 typedef NvAFX_Status (*fn_NvAFX_GetFloat)(NvAFX_Handle, NvAFX_ParameterSelector, float *);
 typedef NvAFX_Status (*fn_NvAFX_Load)(NvAFX_Handle);
-typedef NvAFX_Status (*fn_NvAFX_Run)(NvAFX_Handle, const float **, float **, unsigned int, unsigned int);
+typedef NvAFX_Status (*fn_NvAFX_Run)(NvAFX_Handle, const float** input, float** output, unsigned num_input_samples, unsigned num_input_channels);
 typedef NvAFX_Status (*fn_NvAFX_Reset)(NvAFX_Handle, NvAFX_Bool *, int);
 
 typedef NvAFX_Status (*fn_NvAFX_CreateChainedEffect)(NvAFX_EffectSelector, NvAFX_Handle *);
@@ -32,7 +32,7 @@ typedef NvAFX_Status (*fn_NvAFX_GetStringList)(NvAFX_Handle, NvAFX_ParameterSele
 typedef NvAFX_Status (*fn_NvAFX_SetStreamFloatList)(NvAFX_Handle, NvAFX_ParameterSelector,
                                                      const unsigned int *, const float **, unsigned int);
 #endif
-typedef NvAFX_Status (*fn_NvAFX_InitializeLogger)(int, const char *);
+typedef NvAFX_Status (*fn_NvAFX_InitializeLogger)(NvAFX_LoggingSeverity level, int target, const char *filename, nvafx_logging_cb_t, void* userdata);
 typedef NvAFX_Status (*fn_NvAFX_UninitializeLogger)(void);
 
 struct maxine_sdk {
