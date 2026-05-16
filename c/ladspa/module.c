@@ -7,10 +7,13 @@
 
 #include <math.h>
 #include <threads.h>
+#include <poll.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
+#include <sys/inotify.h>
 #include <unistd.h>
 
 #include "ladspa.h"
@@ -62,6 +65,7 @@ typedef struct {
 
   bool sdk_ok;
   bool async_started;
+
   struct maxine_sdk sdk;
   struct maxine_effect* effect;
 
@@ -75,6 +79,9 @@ typedef struct {
 
   ringbuf_t downstreams[MAX_DOWNSTREAMS];
   int downstreams_count;
+
+  _Atomic(int) incoming_intensity;
+  int shutdown_fd;
 } maxine_t;
 
 static maxine_t* Maxine = NULL;
@@ -96,6 +103,63 @@ static int maxineAsyncLoad(void* Instance) {
   *new_effect = maxine_effect_create(&psFilter->sdk, &config);
   atomic_store(&psFilter->future_effect, new_effect);
 
+  char configPath[1024];
+  const char* xdgCfg = getenv("XDG_CONFIG_HOME");
+  if (xdgCfg)
+  {
+    sprintf(configPath, "%s/noisetorch/config.toml", xdgCfg);
+  }
+  else
+  {
+    sprintf(configPath, "%s/.config/noisetorch/config.toml", getenv("HOME"));
+  }
+
+  int inot = inotify_init1(IN_NONBLOCK);
+  int wd = inotify_add_watch(inot, configPath, IN_MODIFY);
+  int shutdown = psFilter->shutdown_fd;
+
+  while (true)
+  {
+    struct pollfd fds[] = {
+      { .fd = shutdown, .events = POLLIN },
+      { .fd = inot    , .events = POLLIN },
+    };
+
+    int err = poll(fds, sizeof(fds) / sizeof(*fds), -1);
+    if (err < 0)
+      continue;
+
+    if (fds[0].revents & POLLIN)
+    {
+      break;
+    }
+
+    if (fds[1].revents & POLLIN)
+    {
+      char line[256];
+      while (read(inot, line, sizeof(line)) > 0)
+      {
+        FILE* f = fopen(configPath, "r");
+        while (fgets(line, sizeof(line), f))
+        {
+          char* at = strstr(line, " = ");
+          if (!at) continue;
+
+          char* value = at + 3;
+
+          if (0 == memcmp(line, "Intensity", sizeof("Intensity") - 1))
+          {
+            int percentage = atoi(value);
+            atomic_store_explicit(&psFilter->incoming_intensity, percentage, __ATOMIC_RELAXED);
+          }
+        }
+        fclose(f);
+      }
+    }
+  }
+
+  close(inot);
+
   return 0;
 }
 
@@ -106,6 +170,7 @@ static void maxineInit()
     Maxine = (maxine_t*) calloc(1, sizeof(maxine_t));
     Maxine->sdk_ok = maxine_sdk_load(&Maxine->sdk, NULL);
     Maxine->in_buf = ringbuf_new(FRAMESIZE_BYTES * 100);
+    Maxine->shutdown_fd = eventfd(0, EFD_NONBLOCK);
   }
 
   Maxine->refcount++;
@@ -119,6 +184,9 @@ static void maxineDeinit()
 
   if (Maxine->async_started)
   {
+    uint64_t val = 1;
+    write(Maxine->shutdown_fd, &val, sizeof(val));
+
     int _res;
     thrd_join(Maxine->maxine_loading_thread, &_res);
 
@@ -138,6 +206,7 @@ static void maxineDeinit()
     maxine_sdk_unload(&Maxine->sdk);
 
   ringbuf_free(&Maxine->in_buf);
+  close(Maxine->shutdown_fd);
   free(Maxine);
   Maxine = NULL;
 }
@@ -147,6 +216,7 @@ static void maxineLoad(maxine_config_t init_cfg)
   if (!Maxine->async_started)
   {
     Maxine->current_config = init_cfg;
+    Maxine->incoming_intensity = init_cfg.intensity * 100;
     thrd_create(&Maxine->maxine_loading_thread, maxineAsyncLoad, Maxine);
     Maxine->async_started = true;
   }
@@ -173,7 +243,7 @@ static void maxineDeregister(filter_t* stream)
   }
 }
 
-static void maxinePrepareFilter(maxine_config_t cfg)
+static void maxinePrepareFilter(void)
 {
   if (unlikely(!Maxine->effect)) {
     Maxine->effect = atomic_load(&Maxine->future_effect);
@@ -181,14 +251,7 @@ static void maxinePrepareFilter(maxine_config_t cfg)
 
   struct maxine_effect* effect = Maxine->effect;
   if (likely(effect)) {
-    bool vad = cfg.vad;
-    if (unlikely(vad != Maxine->current_config.vad))
-    {
-      Maxine->current_config.vad = vad;
-      maxine_effect_set_vad(effect, vad);
-    }
-
-    float intensity = cfg.intensity;
+    float intensity = atomic_load_explicit(&Maxine->incoming_intensity, __ATOMIC_RELAXED) / 100.f;
     if (unlikely(intensity != Maxine->current_config.intensity))
     {
       Maxine->current_config.intensity = intensity;
@@ -223,9 +286,9 @@ static void maxineDoRun(float* in, unsigned long n_samples)
   }
 }
 
-static void maxineRun(float* in, unsigned long n_samples, uint64_t cursor, maxine_config_t cfg)
+static void maxineRun(float* in, unsigned long n_samples, uint64_t cursor)
 {
-  maxinePrepareFilter(cfg);
+  maxinePrepareFilter();
 
   uint64_t start = cursor;
   uint64_t end = cursor + n_samples;
@@ -271,8 +334,6 @@ static float to_percentage(const LADSPA_Data* data)
 }
 
 static void activateSimpleFilter(LADSPA_Handle Instance) {
-  fprintf(stderr, "%d %s(%p)\n", gettid(), __func__, Instance);
-
   filter_t *psFilter = (filter_t *)Instance;
 
   maxine_config_t cfg;
@@ -283,8 +344,6 @@ static void activateSimpleFilter(LADSPA_Handle Instance) {
 }
 
 static void deactivateSimpleFilter(LADSPA_Handle Instance) {
-  fprintf(stderr, "%d %s(%p)\n", gettid(), __func__, Instance);
-
   filter_t *psFilter = (filter_t *)Instance;
 
   maxineDeregister(psFilter);
@@ -317,11 +376,7 @@ static void runFilter(LADSPA_Handle Instance, unsigned long n_samples) {
 
   // Drive input
   {
-    maxine_config_t config;
-    config.intensity = to_percentage(psFilter->m_pfIntensity);
-    config.vad = to_boolean(psFilter->m_pfVAD);
-
-    maxineRun(psFilter->m_pfInput, n_samples, psFilter->in_cursor, config);
+    maxineRun(psFilter->m_pfInput, n_samples, psFilter->in_cursor);
     psFilter->in_cursor += n_samples;
   }
 
@@ -345,8 +400,6 @@ static void runFilter(LADSPA_Handle Instance, unsigned long n_samples) {
 }
 
 static void cleanupFilter(LADSPA_Handle Instance) {
-  fprintf(stderr, "%d %s(%p)\n", gettid(), __func__, Instance);
-
   maxineDeinit();
   filter_t *psFilter = (filter_t *)Instance;
   ringbuf_free(&(psFilter->out_buf));

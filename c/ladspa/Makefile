@@ -1,4 +1,4 @@
-CFLAGS = -I -Wall -Werror -ggdb -O3 -march=native -flto
+CFLAGS = -std=gnu11 -I -Wall -Werror -ggdb -O3 -march=native -flto
 LDFLAGS=-Wl,-rpath,\$$ORIGIN -Wl,-z,origin
 
 default:

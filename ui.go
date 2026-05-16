@@ -140,7 +140,6 @@ func mainView(ctx *ntcontext, w *nucular.Window) {
 		}
 		if w.SliderInt(0, &ctx.config.Intensity, 100, 1) {
 			go writeConfig(ctx.config)
-			ctx.reloadRequired = true
 		}
 		w.Label(fmt.Sprintf("%d%%", ctx.config.Intensity), "RC")
 
